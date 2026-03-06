@@ -1,0 +1,90 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    image: phishblocker-api:latest
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MODEL_PATH=/app/models/
+      - ENABLE_LLM_ANALYSIS=true
+      - ENABLE_THREAT_INTEL=true
+      - DEBUG=false
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models:/app/models
+      - ./src/api:/app/api
+      - ./requirements.txt:/app/requirements.txt
+    command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    depends_on:
+      - redis
+    deploy:
+      replicas: 1
+    networks:
+      - phishblocker-network
+
+  dashboard:
+    image: node:20-alpine
+    working_dir: /app
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend-react:/app
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    networks:
+      - phishblocker-network
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --requirepass redis_dev_pass_2024 --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - phishblocker-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis_dev_pass_2024", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=phishblocker
+      - POSTGRES_USER=phishblocker
+      - POSTGRES_PASSWORD=phishblocker_dev_pass_2024
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    networks:
+      - phishblocker-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U phishblocker -d phishblocker"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Optional: Prometheus for monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - phishblocker-network
+
+networks:
+  phishblocker-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+  db-data:
