@@ -1,0 +1,43 @@
+# Large Blobs
+models/
+*.onnx
+*.wasm
+*.dll
+*.exe
+*.bin
+*.pt
+*.h5
+*.joblib
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+.env
+
+# Node
+node_modules/
+dist/
+dist-extension/
+coverage/
+.eslintcache
+
+# Project specific
+extension-react/dist/
+frontend-react/dist/
+extension-react/node_modules/
+frontend-react/node_modules/
+extension-react/public/model/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
