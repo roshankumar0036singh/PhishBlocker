@@ -1,0 +1,35 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+    body {
+        @apply bg-night-400 text-white font-sans;
+        margin: 0;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+    }
+}
+
+@layer components {
+    .glass {
+        @apply bg-white/5 backdrop-blur-md border border-white/10;
+    }
+}
+
+/* Custom Scrollbar for Night Ops */
+::-webkit-scrollbar {
+    width: 6px;
+}
+
+::-webkit-scrollbar-track {
+    @apply bg-night-400;
+}
+
+::-webkit-scrollbar-thumb {
+    @apply bg-white/10 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    @apply bg-accent-emerald/20;
+}

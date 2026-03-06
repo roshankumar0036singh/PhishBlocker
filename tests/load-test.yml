@@ -1,0 +1,40 @@
+config:
+  target: 'http://localhost:8000'
+  phases:
+    - duration: 60
+      arrivalRate: 1
+    - duration: 120
+      arrivalRate: 5
+    - duration: 60
+      arrivalRate: 10
+  defaults:
+    headers:
+      Content-Type: 'application/json'
+
+scenarios:
+  - name: "Health Check"
+    weight: 30
+    flow:
+      - get:
+          url: "/health"
+
+  - name: "Single URL Scan"
+    weight: 50
+    flow:
+      - post:
+          url: "/scan"
+          json:
+            url: "https://www.example.com"
+            user_id: "test_user"
+
+  - name: "Batch URL Scan"
+    weight: 20
+    flow:
+      - post:
+          url: "/scan-batch"
+          json:
+            urls:
+              - "https://www.google.com"
+              - "https://www.github.com"
+              - "https://www.stackoverflow.com"
+            user_id: "test_user"
