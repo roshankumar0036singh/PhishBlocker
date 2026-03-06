@@ -13,7 +13,6 @@ PhishBlocker utilizes a multi-layered defense strategy:
 
 *   **Ensemble ML Engine**: Leverages LightGBM, TensorFlow, and Transformer-based URL analysis.
 *   **LLM Verification**: Deep contextual threat assessment via Google Gemini.
-*   **High-Contrast Forensic UI**: Modern "Night Ops" design system for technical clarity.
 *   **Distributed Telemetry**: Real-time stats synchronization across all neural endpoints.
 
 ## Key Features
@@ -22,7 +21,7 @@ PhishBlocker utilizes a multi-layered defense strategy:
 *   **Vector Analysis**: Lexical and structural URL inspection.
 *   **Contextual Insight**: LLM-driven forensic reporting for complex threats.
 *   **Performance**: Sub-100ms response times for core ML predictions.
-*   **Accuracy**: 99.2% verified detection rate in benchmark testing.
+*   **Accuracy**: 98.3% verified detection rate in benchmark testing.
 
 ### Protection Suite
 *   **Browser Extension**: Real-time page scanning during navigation.
@@ -52,17 +51,23 @@ Detailed technical specifications can be found in [ARCHITECTURE.md](ARCHITECTURE
 
 1.  **Clone Repository**
     ```bash
-    git clone https://github.com/roshankumar0036singh/PhishBlocker.git
+    git clone https://github.com/roshankumar0036singh/AI-Driven-Phishing-Detection-System.git
     cd PhishBlocker
     ```
 
-2.  **Environment Configuration**
+2.  **Neural Model Setup**
+    The models are excluded from Git to keep the repository lightweight.
+    *   Download the model bundle from [GitHub Releases](https://github.com/roshankumar0036singh/AI-Driven-Phishing-Detection-System/releases).
+    *   Place all files (`.h5`, `.txt`, `.pkl`, `.json`) into the `models/` directory.
+    *   For the extension, ensure `url_classifier.onnx` is in `extension-react/public/models/`.
+
+3.  **Environment Configuration**
     Copy `.env.production` to `.env` and provide your API credentials.
     ```bash
     cp .env.production .env
     ```
 
-3.  **Deployment**
+4.  **Deployment**
     ```bash
     docker-compose up -d
     ```
