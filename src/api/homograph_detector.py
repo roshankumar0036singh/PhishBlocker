@@ -189,7 +189,7 @@ class HomographDetector:
             
             # Check Levenshtein distance
             distance = self._levenshtein_distance(normalized, legit_domain)
-            if distance <= 2:  # Allow up to 2 character differences
+            if distance <= 1:  # Only allow 1 character difference for high-confidence homograph detection
                 return {
                     "is_similar": True,
                     "legitimate_domain": legit_domain,

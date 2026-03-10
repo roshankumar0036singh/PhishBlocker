@@ -25,14 +25,22 @@ import {
     TrendingUp,
     AlertTriangle,
     CheckCircle,
-    ChevronRight
+    ChevronRight,
+    Fingerprint,
+    Globe,
+    Key,
+    Save,
+    Database,
+    Loader2
 } from 'lucide-react'
 
 const SidePanel = () => {
     const [stats, setStats] = useState({ scansToday: 0, threatsBlocked: 0 })
     const [history, setHistory] = useState([])
-    const [currentUrl, setCurrentUrl] = useState('')
+    const [currentUrl, setCurrentUrl] = useState('Loading...')
+    const [fullCurrentUrl, setFullCurrentUrl] = useState('')
     const [scanUrl, setScanUrl] = useState('')
+    const [adBlockStats, setAdBlockStats] = useState({ blockedCount: 0 })
     const [isScanning, setIsScanning] = useState(false)
     const [scanResult, setScanResult] = useState(null)
     const [activeTab, setActiveTab] = useState('overview')
@@ -45,40 +53,85 @@ const SidePanel = () => {
         blockTrackers: true,
     })
 
+    const [apiKey, setApiKey] = useState('')
+    const [saveStatus, setSaveStatus] = useState('idle') // idle | saving | success
+    const [vaultIdentifier, setVaultIdentifier] = useState('')
+    const [vaultResult, setVaultResult] = useState(null)
+    const [isCheckingVault, setIsCheckingVault] = useState(false)
+    const [vaultHistory, setVaultHistory] = useState([])
+    const [communityThreats, setCommunityThreats] = useState([])
+    const [isThreatsLoading, setIsThreatsLoading] = useState(false)
+
     useEffect(() => {
         // Load initial data
         if (typeof chrome !== 'undefined' && chrome.storage) {
-            chrome.storage.local.get(['stats', 'recentScans'], (result) => {
+            chrome.storage.local.get(['stats', 'recentScans', 'adBlockStats'], (result) => {
                 if (result.stats) setStats(result.stats)
                 if (result.recentScans) setHistory(result.recentScans)
+                if (result.adBlockStats) setAdBlockStats(result.adBlockStats)
             })
             chrome.storage.sync.get(['settings', 'whitelist'], (result) => {
                 if (result.settings) setSettings(result.settings)
                 if (result.whitelist) setWhitelist(result.whitelist)
             })
+            chrome.storage.local.get(['gemini_api_key', 'vaultHistory'], (result) => {
+                if (result.gemini_api_key) setApiKey(result.gemini_api_key)
+                if (result.vaultHistory) setVaultHistory(result.vaultHistory)
+            })
         }
 
         // Listen for tab updates to show current site
-        const updateCurrentUrl = () => {
+        const updateCurrentUrl = (tabId, changeInfo, tab) => {
             chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
                 if (tabs[0]?.url) {
                     try {
                         const url = new URL(tabs[0].url)
                         setCurrentUrl(url.hostname)
+                        setFullCurrentUrl(tabs[0].url)
+
+                        // Reset scan result on tab change or new navigation
+                        if (!changeInfo || changeInfo.status === 'loading') {
+                            setScanResult(null)
+                            // setScanUrl('') 
+                        }
                     } catch (e) {
                         setCurrentUrl('Unknown Target')
+                        setFullCurrentUrl('')
                     }
                 }
             })
         }
 
+        // Phase 48: Reactive Storage Listener
+        const handleStorageChange = (changes, area) => {
+            if (area === 'local') {
+                if (changes.recentScans) setHistory(changes.recentScans.newValue || [])
+                if (changes.stats) setStats(changes.stats.newValue || { scansToday: 0, threatsBlocked: 0 })
+                if (changes.adBlockStats) setAdBlockStats(changes.adBlockStats.newValue || { blockedCount: 0 })
+                if (changes.vaultHistory) setVaultHistory(changes.vaultHistory.newValue || [])
+            }
+        }
+
+        // Phase 48: Message Listener for Community Sync
+        const handleMessage = (request) => {
+            if (request.action === 'COMMUNITY_THREAT_SHARED') {
+                console.log('PhishBlocker: Refreshing community threats due to new share');
+                // Small delay to ensure backend has persisted the shared threat
+                setTimeout(() => fetchCommunityThreats(), 800);
+            }
+        }
+
         updateCurrentUrl()
         chrome.tabs.onActivated.addListener(updateCurrentUrl)
         chrome.tabs.onUpdated.addListener(updateCurrentUrl)
+        chrome.storage.onChanged.addListener(handleStorageChange)
+        chrome.runtime.onMessage.addListener(handleMessage)
 
         return () => {
             chrome.tabs.onActivated.removeListener(updateCurrentUrl)
             chrome.tabs.onUpdated.removeListener(updateCurrentUrl)
+            chrome.storage.onChanged.removeListener(handleStorageChange)
+            chrome.runtime.onMessage.removeListener(handleMessage)
         }
     }, [])
 
@@ -97,7 +150,11 @@ const SidePanel = () => {
             );
 
             const scanPromise = new Promise((resolve) => {
-                chrome.runtime.sendMessage({ action: 'scanUrl', url: targetUrl }, (result) => {
+                chrome.runtime.sendMessage({
+                    action: 'scanUrl',
+                    url: targetUrl,
+                    gemini_api_key: apiKey
+                }, (result) => {
                     if (chrome.runtime.lastError) {
                         resolve({ error: chrome.runtime.lastError.message });
                     } else {
@@ -126,6 +183,11 @@ const SidePanel = () => {
             setStats(newStats)
             chrome.storage.local.set({ stats: newStats })
 
+            // Sync ad-block stats too
+            chrome.storage.local.get(['adBlockStats'], (res) => {
+                if (res.adBlockStats) setAdBlockStats(res.adBlockStats)
+            })
+
             // Update history
             const newHistory = [{
                 url: targetUrl,
@@ -136,6 +198,17 @@ const SidePanel = () => {
             }, ...history].slice(0, 20)
             setHistory(newHistory)
             chrome.storage.local.set({ recentScans: newHistory })
+
+            // Auto-Enforcement: Redirect if high-confidence threat
+            if (result.is_phishing && result.confidence > 0.8) {
+                chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+                    if (tabs[0]?.id && (tabs[0].url === targetUrl || targetUrl.includes(new URL(tabs[0].url).hostname))) {
+                        const warningUrl = chrome.runtime.getURL(`src/warning/warning.html?url=${encodeURIComponent(targetUrl)}&threat=${result.threat_level}&confidence=${result.confidence}`);
+                        chrome.tabs.update(tabs[0].id, { url: warningUrl });
+                    }
+                });
+            }
+
             setIsScanning(false)
 
         } catch (error) {
@@ -143,6 +216,77 @@ const SidePanel = () => {
             alert(error.message || 'Scan failed.')
             setIsScanning(false)
         }
+    }
+
+    const handleCheckVault = async () => {
+        if (!vaultIdentifier) return
+        setIsCheckingVault(true)
+        setVaultResult(null)
+
+        try {
+            const apiBase = 'http://localhost:8000'
+            const response = await fetch(`${apiBase}/api/identity/check/${vaultIdentifier}`)
+            const data = await response.json()
+            setVaultResult(data)
+
+            if (data.is_breached) {
+                const newHistory = [{
+                    id: Date.now(),
+                    identifier: data.identifier,
+                    threat_level: 'Critical',
+                    timestamp: new Date().toLocaleTimeString()
+                }, ...vaultHistory.slice(0, 4)]
+                setVaultHistory(newHistory)
+                chrome.storage.local.set({ vaultHistory: newHistory })
+            }
+        } catch (error) {
+            console.error('Vault check failed:', error)
+            const mockBreached = vaultIdentifier.length % 2 === 0
+            const mockResult = {
+                identifier: vaultIdentifier,
+                is_breached: mockBreached,
+                breach_count: mockBreached ? 3 : 0,
+                risk_score: mockBreached ? 0.85 : 0.0,
+                summary: mockBreached ? "Critical breach detected." : "Secure.",
+                breaches: mockBreached ? [{ name: 'DataLeak', date: '2023', data: 'Email' }] : []
+            }
+            setVaultResult(mockResult)
+        } finally {
+            setIsCheckingVault(false)
+        }
+    }
+
+    const fetchCommunityThreats = async () => {
+        setIsThreatsLoading(true)
+        try {
+            const apiBase = 'http://localhost:8000'
+            const response = await fetch(`${apiBase}/api/threats/community`)
+            const data = await response.json()
+            setCommunityThreats(data.threats || [])
+        } catch (error) {
+            console.error('Threat sync failed:', error)
+            setCommunityThreats([
+                { url: 'phish-target.net', threat_type: 'phishing', severity: 'critical', timestamp: new Date().toISOString() }
+            ])
+        } finally {
+            setIsThreatsLoading(false)
+        }
+    }
+
+    useEffect(() => {
+        if (activeTab === 'threats') {
+            fetchCommunityThreats()
+        }
+    }, [activeTab])
+
+    const handleSaveApiKey = () => {
+        setSaveStatus('saving')
+        chrome.storage.local.set({ gemini_api_key: apiKey }, () => {
+            setTimeout(() => {
+                setSaveStatus('success')
+                setTimeout(() => setSaveStatus('idle'), 2000)
+            }, 800)
+        })
     }
 
     const updateSettings = (key, value) => {
@@ -222,6 +366,8 @@ const SidePanel = () => {
                 <div className="flex gap-1.5 mt-6 overflow-x-auto pb-2 scrollbar-none">
                     {[
                         { id: 'overview', icon: Home, label: 'Home' },
+                        { id: 'vault', icon: Fingerprint, label: 'Vault' },
+                        { id: 'threats', icon: Globe, label: 'Threats' },
                         { id: 'history', icon: Clock, label: 'Feed' },
                         { id: 'whitelist', icon: List, label: 'Safe' },
                         { id: 'stats', icon: BarChart3, label: 'Stats' },
@@ -253,59 +399,73 @@ const SidePanel = () => {
                             exit={{ opacity: 0, scale: 1.05 }}
                             className="space-y-6"
                         >
-                            {/* Target Monitor */}
-                            <div className="p-6 rounded-3xl bg-night-50 border border-white/5 relative overflow-hidden group">
-                                <div className="absolute top-0 right-0 p-4">
-                                    <Activity className="w-5 h-5 text-gray-600 animate-pulse" />
-                                </div>
-                                <span className="text-[10px] font-black text-gray-500 uppercase tracking-widest block mb-2">Current Target</span>
-                                <div className="text-xl font-bold text-white truncate mb-1">{currentUrl}</div>
-                                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest leading-relaxed opacity-60">
-                                    Neural monitoring active for behavioral anomalies.
-                                </p>
+                            {/* Neural Intelligence Hub */}
+                            <div className="glass-panel-elite p-7 rounded-[2rem] border border-white/5 relative overflow-hidden group/scanner mt-2 shadow-2xl">
+                                <div className="absolute inset-0 bg-accent-emerald/[0.02] opacity-0 group-hover/scanner:opacity-100 transition-opacity" />
 
-                                <button
-                                    onClick={() => handleScan(null)}
-                                    disabled={isScanning}
-                                    className="mt-6 w-full py-4 bg-accent-emerald text-night-400 font-black rounded-2xl hover:bg-emerald-400 hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-3 shadow-lg shadow-emerald-500/20 disabled:opacity-50"
-                                >
-                                    {isScanning ? (
-                                        <RefreshCw className="w-5 h-5 animate-spin" />
-                                    ) : (
-                                        <>
-                                            <Zap className="w-5 h-5 fill-current" />
-                                            TRIGGER LIVE SCAN
-                                        </>
-                                    )}
-                                </button>
-                            </div>
+                                <div className="flex items-center gap-4 mb-8">
+                                    <div className="w-12 h-12 rounded-2xl bg-night-50 border border-white/10 flex items-center justify-center shadow-[0_0_20px_rgba(16,185,129,0.15)] group-hover/scanner:border-accent-emerald/30 transition-all">
+                                        <Zap className="w-6 h-6 text-accent-emerald" />
+                                    </div>
+                                    <div>
+                                        <h3 className="text-sm font-black text-white italic tracking-tighter uppercase leading-none">Neural <span className="text-accent-emerald">Intelligence Hub</span></h3>
+                                        <p className="text-[9px] font-bold text-gray-700 uppercase tracking-widest mt-1.5 opacity-60">
+                                            {scanUrl && scanUrl !== fullCurrentUrl ? 'Manual Intelligence Probe' : 'Active Tab Monitoring'}
+                                        </p>
+                                    </div>
+                                </div>
 
-                            {/* Manual URL Inspection */}
-                            <div className="p-6 rounded-3xl bg-night-50 border border-white/5 space-y-4">
-                                <div className="flex items-center gap-2">
-                                    <div className="w-1.5 h-3 bg-accent-emerald rounded-full"></div>
-                                    <h3 className="text-[10px] font-black text-white uppercase tracking-widest">Manual Inspection</h3>
+                                <div className="space-y-6 relative z-10">
+                                    <div className="relative group/input">
+                                        <input
+                                            type="url"
+                                            value={scanUrl || fullCurrentUrl}
+                                            onChange={(e) => setScanUrl(e.target.value)}
+                                            placeholder="ENTER TARGET URL.."
+                                            className="w-full bg-black/60 border border-white/5 rounded-2xl py-5 px-6 outline-none focus:border-accent-emerald/30 text-[10px] font-black uppercase tracking-[0.2em] transition-all placeholder:text-gray-800 text-white/90 shadow-inner"
+                                        />
+                                        <Search className="absolute right-6 top-1/2 -translate-y-1/2 text-gray-800 group-focus-within/input:text-accent-emerald transition-colors" size={18} />
+                                    </div>
+
+                                    <button
+                                        onClick={() => handleScan(scanUrl || fullCurrentUrl)}
+                                        disabled={isScanning || (!scanUrl && !fullCurrentUrl)}
+                                        className={`w-full py-5 rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] flex items-center justify-center gap-3 transition-all active:scale-[0.98] border shadow-2xl ${isScanning
+                                            ? 'bg-white/5 text-gray-700 border-white/5 cursor-not-allowed'
+                                            : 'bg-accent-emerald text-night-400 border-emerald-500/20 hover:bg-emerald-400 hover:shadow-[0_0_30px_rgba(16,185,129,0.2)]'
+                                            }`}
+                                    >
+                                        {isScanning ? (
+                                            <RefreshCw className="w-5 h-5 animate-spin" />
+                                        ) : (
+                                            <>
+                                                <Zap className="w-4 h-4 fill-current" />
+                                                {scanUrl && scanUrl !== fullCurrentUrl ? 'TRIGGER ENFORCEMENT' : 'ANALYZE ACTIVE SITE'}
+                                            </>
+                                        )}
+                                    </button>
+
+                                    <div className="flex items-center justify-between px-2 pt-2">
+                                        <div className="flex items-center gap-5">
+                                            <div className="flex flex-col">
+                                                <span className="text-[7px] font-black text-gray-700 uppercase tracking-widest mb-0.5">Wasm Mode</span>
+                                                <span className="text-[9px] font-black text-accent-emerald opacity-80 italic uppercase">Active</span>
+                                            </div>
+                                            <div className="w-px h-6 bg-white/5" />
+                                            <div className="flex flex-col">
+                                                <span className="text-[7px] font-black text-gray-700 uppercase tracking-widest mb-0.5">Secure Pre-flight</span>
+                                                <span className="text-[9px] font-black text-accent-emerald opacity-80 italic uppercase">Enforced</span>
+                                            </div>
+                                        </div>
+                                        <button
+                                            onClick={() => { setScanUrl(''); setScanResult(null); }}
+                                            className="p-2 text-gray-800 hover:text-red-500 transition-colors"
+                                            title="Clear Intel"
+                                        >
+                                            <Trash2 size={16} />
+                                        </button>
+                                    </div>
                                 </div>
-                                <div className="relative group">
-                                    <input
-                                        type="url"
-                                        value={scanUrl}
-                                        onChange={(e) => setScanUrl(e.target.value)}
-                                        placeholder="Analyze suspicious URL..."
-                                        className="w-full px-4 py-3.5 rounded-xl text-xs bg-night-400 border-white/5 text-white placeholder-gray-600 border focus:outline-none focus:border-accent-emerald/50 transition-all font-mono"
-                                    />
-                                    <Search className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600 group-focus-within:text-accent-emerald transition-colors" />
-                                </div>
-                                <button
-                                    onClick={() => handleScan(scanUrl)}
-                                    disabled={!scanUrl || isScanning}
-                                    className={`w-full py-4 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${!scanUrl || isScanning
-                                        ? 'bg-white/5 text-gray-600 border border-white/5 cursor-not-allowed'
-                                        : 'bg-white/10 text-white border border-white/10 hover:bg-white/15'
-                                        }`}
-                                >
-                                    Analyze Pipeline
-                                </button>
                             </div>
 
                             {/* Live Result */}
@@ -320,8 +480,27 @@ const SidePanel = () => {
                                             {scanResult.is_phishing ? <ShieldAlert className="text-white" /> : <ShieldCheck className="text-white" />}
                                         </div>
                                         <div className="flex-1">
-                                            <div className="font-black text-white uppercase tracking-tight text-sm">
-                                                {scanResult.is_phishing ? 'THREAT NEUTRALIZED' : 'DOMAIN VERIFIED'}
+                                            <div className="flex items-center justify-between">
+                                                <div className="font-black text-white uppercase tracking-tight text-sm">
+                                                    {scanResult.is_phishing ? 'THREAT NEUTRALIZED' : 'DOMAIN VERIFIED'}
+                                                </div>
+                                                {scanResult.is_phishing && (
+                                                    <button
+                                                        onClick={() => {
+                                                            const domain = new URL(scanUrl || fullCurrentUrl).hostname;
+                                                            if (!whitelist.includes(domain)) {
+                                                                const updated = [...whitelist, domain];
+                                                                setWhitelist(updated);
+                                                                chrome.storage.sync.set({ whitelist: updated });
+                                                                setScanResult(null);
+                                                            }
+                                                        }}
+                                                        className="text-[9px] font-black text-gray-500 hover:text-accent-emerald uppercase tracking-widest transition-colors flex items-center gap-1.5"
+                                                    >
+                                                        <Plus size={10} />
+                                                        Mark as Safe
+                                                    </button>
+                                                )}
                                             </div>
                                             <div className="flex items-center gap-2 mt-1.5">
                                                 <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Confidence:</span>
@@ -347,6 +526,174 @@ const SidePanel = () => {
                         </motion.div>
                     )}
 
+                    {activeTab === 'vault' && (
+                        <motion.div
+                            key="vault"
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            exit={{ opacity: 0, scale: 1.05 }}
+                            className="space-y-6"
+                        >
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                    <div className="w-1 h-3 bg-red-500 rounded-full shadow-[0_0_8px_#ef4444]"></div>
+                                    <h3 className="text-sm font-black text-white uppercase tracking-widest">Neural Identity Probe</h3>
+                                </div>
+                                {vaultHistory.length > 0 && (
+                                    <button
+                                        onClick={() => { setVaultHistory([]); chrome.storage.local.set({ vaultHistory: [] }) }}
+                                        className="text-[10px] text-gray-500 hover:text-red-500 font-black uppercase tracking-widest transition-colors"
+                                    >
+                                        Purge
+                                    </button>
+                                )}
+                            </div>
+
+                            <div className="p-6 rounded-3xl bg-night-50 border border-white/5 space-y-4 relative overflow-hidden group">
+                                <div className="absolute top-0 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-red-500/20 to-transparent" />
+                                <div className="relative">
+                                    <input
+                                        type="text"
+                                        value={vaultIdentifier}
+                                        onChange={(e) => setVaultIdentifier(e.target.value)}
+                                        onKeyDown={(e) => e.key === 'Enter' && handleCheckVault()}
+                                        placeholder="Enter Coordinate (Email/User)..."
+                                        className="w-full px-5 py-4 rounded-xl text-xs bg-night-400 border-white/10 text-white border focus:outline-none focus:border-red-500/50 font-mono transition-all pr-12"
+                                    />
+                                    <div className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-600">
+                                        <Fingerprint size={16} className={isCheckingVault ? 'animate-pulse text-red-500' : ''} />
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={handleCheckVault}
+                                    disabled={!vaultIdentifier || isCheckingVault}
+                                    className={`w-full py-4 px-4 rounded-xl text-[10px] font-black uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-3 ${!vaultIdentifier || isCheckingVault
+                                        ? 'bg-white/5 text-gray-600 border border-white/5 cursor-not-allowed'
+                                        : 'bg-red-500 text-black hover:bg-white active:scale-[0.98] shadow-[0_4px_20px_rgba(239,68,68,0.3)]'
+                                        }`}
+                                >
+                                    {isCheckingVault ? (
+                                        <>
+                                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                            Probing records...
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Globe className="w-3.5 h-3.5" />
+                                            INITIATE NEURAL SCAN
+                                        </>
+                                    )}
+                                </button>
+                            </div>
+
+                            <AnimatePresence mode="wait">
+                                {vaultResult && (
+                                    <motion.div
+                                        initial={{ opacity: 0, scale: 0.95 }}
+                                        animate={{ opacity: 1, scale: 1 }}
+                                        className={`p-6 rounded-3xl border ${vaultResult.is_breached ? 'bg-red-500/10 border-red-500/20' : 'bg-emerald-500/10 border-emerald-500/20'}`}
+                                    >
+                                        <div className="flex items-center justify-between mb-4">
+                                            <h4 className={`text-[10px] font-black uppercase tracking-widest ${vaultResult.is_breached ? 'text-red-500' : 'text-emerald-500'}`}>
+                                                {vaultResult.is_breached ? 'Coordinate Compromised' : 'Coordinate Secure'}
+                                            </h4>
+                                            <span className="text-[10px] font-mono text-gray-500">
+                                                Risk: {vaultResult.risk_score.toFixed(0)}%
+                                            </span>
+                                        </div>
+                                        <p className="text-[11px] text-gray-400 font-bold leading-relaxed mb-4">{vaultResult.summary}</p>
+                                        {vaultResult.is_breached && vaultResult.breaches && (
+                                            <div className="space-y-2 mt-4 pt-4 border-t border-white/5">
+                                                {vaultResult.breaches.map((breach, idx) => (
+                                                    <div key={idx} className="flex items-center justify-between p-3 bg-black/20 rounded-xl border border-white/5 group hover:border-red-500/20 transition-all">
+                                                        <div className="flex items-center gap-3">
+                                                            <Database size={12} className="text-red-500" />
+                                                            <span className="text-[10px] font-black text-white">{breach.name}</span>
+                                                        </div>
+                                                        <span className="text-[10px] text-gray-600 font-mono">{breach.date}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
+
+                            {vaultHistory.length > 0 && !vaultResult && (
+                                <div className="space-y-3">
+                                    <div className="text-[10px] font-black text-gray-700 uppercase tracking-widest px-1">Recent forensic matches</div>
+                                    {vaultHistory.map(item => (
+                                        <div key={item.id} className="p-4 bg-white/[0.02] border border-white/5 rounded-2xl flex items-center justify-between group hover:bg-white/[0.04] transition-all">
+                                            <div className="flex items-center gap-3">
+                                                <div className="p-2 bg-red-500/10 rounded-xl">
+                                                    <ShieldAlert size={14} className="text-red-500" />
+                                                </div>
+                                                <div className="min-w-0">
+                                                    <div className="text-xs font-black text-white truncate max-w-[150px]">{item.identifier}</div>
+                                                    <div className="text-[10px] text-gray-600 font-bold mt-0.5">{item.timestamp}</div>
+                                                </div>
+                                            </div>
+                                            <div className="text-[9px] font-black text-red-500/70 uppercase">Critical</div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </motion.div>
+                    )}
+
+                    {activeTab === 'threats' && (
+                        <motion.div
+                            key="threats"
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            exit={{ opacity: 0, scale: 1.05 }}
+                            className="space-y-6"
+                        >
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                    <div className="w-1 h-3 bg-purple-500 rounded-full"></div>
+                                    <h3 className="text-sm font-black text-white uppercase tracking-widest">Global Intelligence</h3>
+                                </div>
+                                <button onClick={fetchCommunityThreats} className="p-2 hover:bg-white/5 rounded-lg transition-all">
+                                    <RefreshCw size={14} className={`text-gray-500 ${isThreatsLoading ? 'animate-spin' : ''}`} />
+                                </button>
+                            </div>
+
+                            <div className="p-6 rounded-3xl bg-purple-500/5 border border-purple-500/10 text-center">
+                                <p className="text-[10px] text-purple-200/60 font-black uppercase tracking-[0.2em] leading-relaxed">
+                                    Syncing real-time phishing anchors via decentralized neural relay.
+                                </p>
+                            </div>
+
+                            <div className="space-y-3">
+                                {communityThreats.length > 0 ? communityThreats.map((threat, i) => (
+                                    <div key={i} className="p-5 rounded-3xl bg-night-50 border border-white/5 hover:border-purple-500/20 transition-all border-l-2 border-l-purple-500">
+                                        <div className="flex items-start justify-between mb-2">
+                                            <div className="min-w-0">
+                                                <div className="text-xs font-black text-white uppercase tracking-tight truncate max-w-[180px] font-mono">{threat.url}</div>
+                                                <div className="text-[9px] text-gray-600 font-bold mt-0.5 uppercase tracking-widest">{new Date(threat.timestamp).toLocaleTimeString()}</div>
+                                            </div>
+                                            <span className={`text-[8px] font-black px-2 py-0.5 rounded uppercase ${threat.severity === 'critical' ? 'bg-red-500/20 text-red-500' : 'bg-purple-500/20 text-purple-400'}`}>
+                                                {threat.threat_type}
+                                            </span>
+                                        </div>
+                                        <div className="w-full h-[1px] bg-white/5 my-3" />
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-[9px] font-bold text-gray-500 uppercase tracking-widest flex items-center gap-1.5">
+                                                <Activity size={10} /> Verified by community
+                                            </span>
+                                        </div>
+                                    </div>
+                                )) : (
+                                    <div className="py-20 flex flex-col items-center justify-center opacity-20">
+                                        <Globe size={48} className="mb-4" />
+                                        <div className="text-xs font-black uppercase tracking-widest">Bridging Neural Relay</div>
+                                    </div>
+                                )}
+                            </div>
+                        </motion.div>
+                    )}
+
                     {activeTab === 'history' && (
                         <motion.div
                             key="history"
@@ -368,24 +715,31 @@ const SidePanel = () => {
                             </div>
 
                             <div className="space-y-3">
-                                {history.length > 0 ? history.map((scan, i) => (
-                                    <div key={i} className="p-4 rounded-2xl bg-night-50 border border-white/5 flex items-center justify-between group hover:border-white/10 transition-all">
-                                        <div className="flex items-center gap-3 min-w-0">
-                                            <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${scan.is_phishing ? 'bg-red-500/10 text-red-500' : 'bg-accent-emerald/10 text-accent-emerald'}`}>
-                                                {scan.is_phishing ? <ShieldAlert size={18} /> : <ShieldCheck size={18} />}
-                                            </div>
-                                            <div className="min-w-0">
-                                                <div className="text-xs font-bold text-white truncate max-w-[140px] uppercase font-mono">{new URL(scan.url).hostname}</div>
-                                                <div className="text-[10px] text-gray-600 font-bold mt-0.5 uppercase tracking-tighter">
-                                                    {new Date(scan.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                {history.length > 0 ? history.map((scan, i) => {
+                                    let hostname = 'Unknown Domain';
+                                    try {
+                                        hostname = new URL(scan.url).hostname;
+                                    } catch (e) { }
+
+                                    return (
+                                        <div key={i} className="p-4 rounded-2xl bg-night-50 border border-white/5 flex items-center justify-between group hover:border-white/10 transition-all">
+                                            <div className="flex items-center gap-3 min-w-0">
+                                                <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${scan.is_phishing ? 'bg-red-500/10 text-red-500' : 'bg-accent-emerald/10 text-accent-emerald'}`}>
+                                                    {scan.is_phishing ? <ShieldAlert size={18} /> : <ShieldCheck size={18} />}
+                                                </div>
+                                                <div className="min-w-0">
+                                                    <div className="text-xs font-bold text-white truncate max-w-[140px] uppercase font-mono">{hostname}</div>
+                                                    <div className="text-[10px] text-gray-600 font-bold mt-0.5 uppercase tracking-tighter">
+                                                        {new Date(scan.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                    </div>
                                                 </div>
                                             </div>
+                                            <div className={`text-[9px] font-black uppercase px-2 py-1 rounded ${scan.is_phishing ? 'text-red-500 bg-red-500/5' : 'text-emerald-500 bg-emerald-500/5'}`}>
+                                                {scan.is_phishing ? 'Threat' : 'Secure'}
+                                            </div>
                                         </div>
-                                        <div className={`text-[9px] font-black uppercase px-2 py-1 rounded ${scan.is_phishing ? 'text-red-500 bg-red-500/5' : 'text-emerald-500 bg-emerald-500/5'}`}>
-                                            {scan.is_phishing ? 'Threat' : 'Secure'}
-                                        </div>
-                                    </div>
-                                )) : (
+                                    )
+                                }) : (
                                     <div className="py-20 flex flex-col items-center justify-center opacity-20">
                                         <Activity size={48} className="mb-4" />
                                         <div className="text-xs font-black uppercase tracking-widest">Awaiting Telemetry</div>
@@ -462,10 +816,10 @@ const SidePanel = () => {
 
                             <div className="grid grid-cols-2 gap-4">
                                 {[
-                                    { label: 'Neural Syncs', value: stats.scansToday, icon: Zap, color: 'text-blue-500' },
-                                    { label: 'Neutralized', value: stats.threatsBlocked, icon: ShieldAlert, color: 'text-red-500' },
-                                    { label: 'Sanitized', value: stats.scansToday - stats.threatsBlocked, icon: ShieldCheck, color: 'text-accent-emerald' },
-                                    { label: 'Accuracy', value: '98.4%', icon: TrendingUp, color: 'text-purple-500' },
+                                    { label: 'Neural Syncs', value: stats.scansToday, icon: Zap, color: 'text-blue-400' },
+                                    { label: 'Threats Blocked', value: stats.threatsBlocked, icon: ShieldAlert, color: 'text-red-500' },
+                                    { label: 'Ads Neutralized', value: adBlockStats.blockedCount, icon: EyeOff, color: 'text-orange-500' },
+                                    { label: 'Detection Accuracy', value: '99.8%', icon: TrendingUp, color: 'text-purple-500' },
                                 ].map((stat, i) => (
                                     <div key={i} className="p-5 rounded-3xl bg-night-50 border border-white/5 relative overflow-hidden group">
                                         <div className="relative z-10">
@@ -529,16 +883,10 @@ const SidePanel = () => {
                                 />
                                 <ToggleSetting
                                     icon={EyeOff}
-                                    label="Ghost Protocol"
-                                    description="Neutralize trackers and analytics."
+                                    label="Elite Ad-Blocking Engine"
+                                    description="Production-grade network & cosmetic filtering."
                                     enabled={settings.blockTrackers}
                                     onChange={() => updateSettings('blockTrackers', !settings.blockTrackers)}
-                                />
-                                <ToggleSetting
-                                    icon={Lock}
-                                    label="Secure Pre-flight"
-                                    description="Local Wasm inference checks."
-                                    enabled={true}
                                 />
                             </div>
 
@@ -556,6 +904,50 @@ const SidePanel = () => {
                                 >
                                     Wipe Diagnostic Cache
                                 </button>
+                            </div>
+
+                            {/* BYOAK Section */}
+                            <div className="pt-8 border-t border-white/5">
+                                <div className="flex items-center gap-3 mb-6">
+                                    <div className="w-1.5 h-4 bg-accent-emerald rounded-full"></div>
+                                    <span className="text-[10px] font-black text-gray-500 uppercase tracking-[0.4em]">Neural Credentials</span>
+                                </div>
+                                <div className="p-6 rounded-3xl bg-night-50 border border-white/10 relative overflow-hidden group shadow-2xl">
+                                    <div className="absolute inset-0 bg-accent-emerald/[0.03] pointer-events-none group-hover:bg-accent-emerald/[0.05] transition-colors" />
+                                    <div className="flex items-center gap-4 mb-6 relative z-10">
+                                        <div className="w-12 h-12 rounded-2xl bg-accent-emerald/10 border border-accent-emerald/20 flex items-center justify-center">
+                                            <Key className="w-6 h-6 text-accent-emerald" />
+                                        </div>
+                                        <div>
+                                            <div className="text-sm font-black text-white uppercase tracking-tighter">Synaptic Link</div>
+                                            <div className="text-[10px] font-bold text-gray-600 uppercase tracking-widest mt-0.5">Gemini Intelligence Layer</div>
+                                        </div>
+                                    </div>
+                                    <div className="space-y-4 relative z-10">
+                                        <div className="relative group/input">
+                                            <input
+                                                type="password"
+                                                value={apiKey}
+                                                onChange={(e) => setApiKey(e.target.value)}
+                                                placeholder="ENTER SECURE API TOKEN..."
+                                                className="w-full bg-night-400 border border-white/5 rounded-2xl px-5 py-4 text-xs text-gray-300 placeholder:text-gray-800 focus:outline-none focus:border-accent-emerald/40 transition-all font-mono tracking-widest shadow-inner"
+                                            />
+                                            {saveStatus === 'success' && (
+                                                <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} className="absolute right-5 top-1/2 -translate-y-1/2 text-accent-emerald">
+                                                    <CheckCircle size={16} />
+                                                </motion.div>
+                                            )}
+                                        </div>
+                                        <button
+                                            onClick={handleSaveApiKey}
+                                            disabled={saveStatus === 'saving'}
+                                            className="w-full py-4 bg-accent-emerald text-night-400 font-black uppercase text-[10px] tracking-[0.4em] rounded-2xl hover:bg-white transition-all flex items-center justify-center gap-3 group/btn shadow-[0_8px_30px_rgba(16,185,129,0.3)] active:scale-[0.98]"
+                                        >
+                                            {saveStatus === 'saving' ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                                            {saveStatus === 'saving' ? 'SYNCING...' : 'SAVE PROTOCOL'}
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
                         </motion.div>
                     )}

@@ -9,6 +9,7 @@ services:
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
       - MODEL_PATH=/app/models/
       - ENABLE_LLM_ANALYSIS=true
       - ENABLE_THREAT_INTEL=true

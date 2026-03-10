@@ -1,15 +1,19 @@
 import * as ort from 'onnxruntime-web';
 import { extractLexicalFeatures, prepareTensor } from './feature_extractor';
 
-// Configure ONNX Runtime for Service Worker compatibility static context
-// Disable multithreading, proxy, and SIMD which can cause dynamic import errors in Service Workers (Manifest V3)
+// Configure ONNX Runtime for Service Worker compatibility
+// IMPORTANT: These MUST be set before calling any ort methods
 ort.env.wasm.numThreads = 1;
-ort.env.wasm.proxy = false;
 ort.env.wasm.simd = false;
 
-// Use absolute extension URLs for Wasm binaries
-const wasmPath = chrome.runtime.getURL('/');
-ort.env.wasm.wasmPaths = wasmPath;
+// Explicitly provide the path to the WASM files to avoid dynamic import() in SW context
+const extensionRoot = chrome.runtime.getURL('/');
+ort.env.wasm.wasmPaths = {
+    'ort-wasm-simd.wasm': extensionRoot + 'ort-wasm-simd.wasm',
+    'ort-wasm.wasm': extensionRoot + 'ort-wasm.wasm',
+    'ort-wasm-threaded.wasm': extensionRoot + 'ort-wasm-threaded.wasm',
+    'ort-wasm-simd-threaded.wasm': extensionRoot + 'ort-wasm-simd-threaded.wasm'
+};
 
 let session = null;
 let modelLoaded = false;
@@ -22,8 +26,10 @@ export const initLocalInference = async (modelPath = '/models/url_classifier.onn
 
     try {
         console.log('PhishBlocker: Loading local ML model from:', modelPath);
+        // Use a static model path and force WASM provider
         session = await ort.InferenceSession.create(modelPath, {
-            executionProviders: ['wasm']
+            executionProviders: ['wasm'],
+            graphOptimizationLevel: 'all'
         });
         modelLoaded = true;
         console.log('PhishBlocker: Local ML model loaded successfully');
@@ -63,12 +69,18 @@ export const predictLocal = async (url) => {
         const inputData = prepareTensor(features);
         const tensor = new ort.Tensor('float32', inputData, [1, 10]); // Batch size 1, 10 features
 
-        const feeds = { input: tensor };
+        // Use dynamic input/output names from the session
+        const inputName = session.inputNames[0];
+        const outputName = session.outputNames[0];
+
+        const feeds = { [inputName]: tensor };
         const results = await session.run(feeds);
 
-        const output = results.output.data[0]; // Assuming output is 'output' and single float
+        const output = results[outputName].data[0];
+        console.log(`PhishBlocker: Inference result [${outputName}]:`, output);
+
         return {
-            probability: output,
+            probability: Math.min(output, 0.98),
             is_phishing: output > 0.8, // High threshold for local pre-flight
             method: 'wasm'
         };

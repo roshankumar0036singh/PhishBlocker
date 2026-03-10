@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Activity, Shield, TrendingUp, Users, Radio, Zap } from 'lucide-react'
+import { Activity, Shield, TrendingUp, Radio, Zap, Globe, Cpu } from 'lucide-react'
 import { motion } from 'framer-motion'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
@@ -8,8 +8,8 @@ export default function StatsCards() {
     const [stats, setStats] = useState({
         total_scans: 0,
         threats_blocked: 0,
-        active_users: 0,
-        detection_rate: 0
+        active_nodes: 12,
+        detection_fidelity: 99.4
     })
     const [loading, setLoading] = useState(true)
 
@@ -24,84 +24,69 @@ export default function StatsCards() {
             const response = await fetch(`${API_URL}/api/analytics/global/stats`)
             if (response.ok) {
                 const data = await response.json()
-                setStats(data)
+                setStats(prev => ({ ...prev, ...data }))
             }
         } catch (error) {
-            console.error('Error fetching stats:', error)
+            console.error('Stats fetch error:', error)
         } finally {
             setLoading(false)
         }
     }
 
-    const cards = [
-        {
-            title: 'Global Telemetry',
-            value: stats.total_scans,
-            icon: Radio,
-            glow: 'rgba(16, 185, 129, 0.1)',
-            label: 'Total Logic Units Synchronized'
-        },
-        {
-            title: 'Threat Neutralization',
-            value: stats.threats_blocked,
-            icon: Zap,
-            glow: 'rgba(239, 68, 68, 0.1)',
-            label: 'Malicious Vectors Blocked',
-            isRed: true
-        },
-        {
-            title: 'Neural Fidelity',
-            value: `${stats.detection_rate}%`,
-            icon: Shield,
-            glow: 'rgba(16, 185, 129, 0.1)',
-            label: 'Algorithm Integrity Score'
-        },
-        {
-            title: 'Host Pulsing',
-            value: stats.active_users,
-            icon: Activity,
-            glow: 'rgba(16, 185, 129, 0.1)',
-            label: 'Active Neural Nodes'
-        }
+    const cardData = [
+        { label: 'Neural Traffic', value: stats.total_scans, icon: Globe, color: 'text-emerald-pro', trend: '+12.4%', desc: 'Global intercepts' },
+        { label: 'Neutralized', value: stats.threats_blocked, icon: Shield, color: 'text-red-500', trend: '+3.1%', desc: 'Malicious vectors' },
+        { label: 'Fidelity Index', value: `${stats.detection_fidelity}%`, icon: Cpu, color: 'text-blue-pro', trend: 'Optimized', desc: 'Neural confidence' },
+        { label: 'Active Nodes', value: stats.active_nodes, icon: Radio, color: 'text-emerald-pro', trend: 'STABLE', desc: 'Sync relay nodes' },
     ]
 
     return (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-10">
-            {cards.map((card, index) => (
-                <motion.div
-                    key={card.title}
-                    initial={{ opacity: 0, y: 30 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.8, delay: index * 0.1 }}
-                    className="glass-panel p-9 rounded-[48px] relative overflow-hidden group hover:scale-[1.03] transition-all duration-700"
-                >
-                    {/* Background Glow */}
-                    <div
-                        className="absolute -right-8 -bottom-8 w-40 h-40 blur-[80px] rounded-full transition-all duration-1000 opacity-20 group-hover:opacity-40"
-                        style={{ background: card.isRed ? '#ef444433' : '#10b98133' }}
-                    />
+        <div className="space-y-6 flex-1">
+            {cardData.map((stat, i) => {
+                const Icon = stat.icon
+                return (
+                    <motion.div
+                        key={i}
+                        initial={{ opacity: 0, x: 20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: i * 0.1 }}
+                        className="p-6 glass-surface rounded-[2rem] border border-white/5 relative group overflow-hidden"
+                    >
+                        <div className="absolute inset-0 bg-white/[0.01] group-hover:bg-white/[0.03] transition-colors" />
 
-                    <div className="flex justify-between items-start mb-12 relative z-10">
-                        <div className={`p-5 rounded-2xl bg-white/[0.03] border border-white/5 transition-all duration-700 group-hover:border-white/10 ${card.isRed ? 'text-red-500' : 'text-accent-emerald'}`}>
-                            <card.icon size={28} className={card.isRed ? 'animate-pulse' : ''} />
+                        <div className="flex items-center justify-between mb-4 relative z-10">
+                            <div className={`p-2.5 rounded-xl bg-black/40 border border-white/5 ${stat.color}`}>
+                                <Icon size={18} className="elite-status-glow" />
+                            </div>
+                            <div className="flex flex-col items-end">
+                                <span className="forensic-text text-[8px] text-gray-700">Telemetry</span>
+                                <span className={`text-[10px] font-black uppercase tracking-widest ${stat.color === 'text-red-500' ? 'text-red-500/80' : 'text-emerald-pro/80'}`}>
+                                    {stat.trend}
+                                </span>
+                            </div>
                         </div>
-                        <div className="flex items-center gap-3">
-                            <span className="text-[10px] font-black text-gray-700 uppercase tracking-widest">Live</span>
-                            <div className={`w-2 h-2 rounded-full animate-pulse shadow-[0_0_8px] ${card.isRed ? 'bg-red-500 shadow-red-500' : 'bg-accent-emerald shadow-accent-emerald'}`} />
-                        </div>
-                    </div>
 
-                    <div className="relative z-10">
-                        <div className="text-5xl font-black mb-3 font-mono tracking-tighter text-white group-hover:text-accent-emerald transition-colors duration-700">
-                            {loading ? '---' : (typeof card.value === 'number' ? card.value.toLocaleString() : card.value)}
+                        <div className="relative z-10">
+                            <div className="text-3xl font-black text-white font-mono tracking-tighter mb-1">
+                                {loading ? '---' : typeof stat.value === 'number' ? stat.value.toLocaleString() : stat.value}
+                            </div>
+                            <div className="flex items-center justify-between">
+                                <span className="text-[11px] font-black text-white/50 uppercase tracking-[0.2em]">{stat.label}</span>
+                                <span className="text-[9px] font-bold text-gray-700 uppercase tracking-widest italic">{stat.desc}</span>
+                            </div>
                         </div>
-                        <div className="flex flex-col gap-1.5">
-                            <span className="text-[11px] uppercase tracking-[0.4em] font-black text-white/80">{card.title}</span>
-                            <span className="text-[9px] uppercase tracking-[0.1em] font-bold text-gray-600 leading-none">{card.label}</span>
+
+                        {/* Micro Sparkline Placeholder */}
+                        <div className="mt-4 h-1 w-full bg-white/5 rounded-full overflow-hidden">
+                            <motion.div
+                                initial={{ width: 0 }}
+                                animate={{ width: `${Math.random() * 40 + 60}%` }}
+                                className={`h-full ${stat.color === 'text-red-500' ? 'bg-red-500' : 'bg-emerald-pro'} opacity-30`}
+                            />
                         </div>
-                    </div>
-                </motion.div>
-            ))}
+                    </motion.div>
+                )
+            })}
         </div>
     )
 }

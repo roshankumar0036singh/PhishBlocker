@@ -87,6 +87,21 @@ export default function WarningPage() {
         })
     }
 
+    const shareThreat = () => {
+        setReportStatus('sharing')
+        chrome.runtime.sendMessage({
+            action: 'shareThreat',
+            url: blockedUrl,
+            metadata: urlData
+        }, (response) => {
+            if (response?.success) {
+                setReportStatus('shared')
+            } else {
+                setReportStatus('idle')
+            }
+        })
+    }
+
     return (
         <div className="min-h-screen bg-night-400 text-gray-200 flex items-center justify-center p-6 font-sans selection:bg-accent-emerald/30 overflow-hidden relative">
             {/* Background Architecture */}
@@ -212,26 +227,37 @@ export default function WarningPage() {
                                 Safe Return
                             </button>
                             <button
-                                onClick={reportFalsePositive}
-                                disabled={reportStatus !== 'idle'}
-                                className={`py-5 border-2 rounded-3xl font-black text-xs uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-4 shadow-xl active:scale-[0.98] ${reportStatus === 'reported'
-                                    ? 'bg-accent-emerald/20 border-accent-emerald text-accent-emerald'
-                                    : 'bg-white/5 border-white/10 text-gray-400 hover:bg-white/10 hover:border-white/20'
+                                onClick={shareThreat}
+                                disabled={reportStatus === 'sharing' || reportStatus === 'shared'}
+                                className={`py-5 border-2 rounded-3xl font-black text-xs uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-4 shadow-xl active:scale-[0.98] ${reportStatus === 'shared'
+                                    ? 'bg-blue-500/20 border-blue-500 text-blue-500'
+                                    : 'bg-accent-emerald/10 border-accent-emerald/30 text-accent-emerald hover:bg-accent-emerald/20 hover:border-accent-emerald'
                                     }`}
                             >
-                                {reportStatus === 'reporting' ? (
+                                {reportStatus === 'sharing' ? (
                                     <RefreshCw className="w-5 h-5 animate-spin" />
-                                ) : reportStatus === 'reported' ? (
+                                ) : reportStatus === 'shared' ? (
                                     <>
-                                        <ShieldCheck size={20} />
-                                        Reported
+                                        <Activity size={20} />
+                                        Neural Sync Active
                                     </>
                                 ) : (
                                     <>
-                                        <Flag size={20} />
-                                        False Positive
+                                        <Zap size={20} />
+                                        Share with Community
                                     </>
                                 )}
+                            </button>
+                        </div>
+
+                        <div className="flex justify-center">
+                            <button
+                                onClick={reportFalsePositive}
+                                disabled={reportStatus !== 'idle'}
+                                className={`text-[10px] font-black uppercase tracking-[0.2em] flex items-center gap-2 transition-all ${reportStatus === 'reported' ? 'text-accent-emerald' : 'text-gray-600 hover:text-gray-400'}`}
+                            >
+                                {reportStatus === 'reported' ? <ShieldCheck size={14} /> : <Flag size={14} />}
+                                {reportStatus === 'reported' ? 'False Positive Reported' : 'Report False Positive'}
                             </button>
                         </div>
                     </div>

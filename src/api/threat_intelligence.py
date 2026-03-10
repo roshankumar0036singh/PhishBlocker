@@ -10,6 +10,7 @@ import os
 import urllib.parse
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
+import json
 import hashlib
 
 logger = logging.getLogger(__name__)
@@ -21,13 +22,15 @@ class ThreatIntelligenceAggregator:
     Sources: PhishTank, OpenPhish, URLhaus, Custom feeds
     """
     
-    def __init__(self, cache_ttl_minutes: int = 60):
+    def __init__(self, redis_client=None, cache_ttl_minutes: int = 60):
         """
         Initialize threat intelligence aggregator
         
         Args:
+            redis_client: Optional Redis client for community threats
             cache_ttl_minutes: Cache TTL in minutes
         """
+        self.redis = redis_client
         self.cache_ttl = timedelta(minutes=cache_ttl_minutes)
         self.cache: Dict[str, Dict[str, Any]] = {}
         self.live_cache: Dict[str, Dict[str, Any]] = {} # Cache for on-demand API lookups
@@ -61,6 +64,14 @@ class ThreatIntelligenceAggregator:
         
         logger.info(f"Threat intelligence aggregator initialized with {cache_ttl_minutes}min cache")
     
+    def _is_external_url(self, url: str) -> bool:
+        """Check if URL is an external web URL (http/https)"""
+        try:
+            parsed = urllib.parse.urlparse(url)
+            return parsed.scheme in ['http', 'https']
+        except:
+            return False
+
     async def check_url(self, url: str) -> Dict[str, Any]:
         """
         Check URL against threat intelligence feeds
@@ -101,12 +112,33 @@ class ThreatIntelligenceAggregator:
             
             self.stats['cache_misses'] += 1
             
-            # 3. Perform live API lookups concurrently
+            # 3. Check Community Threat Exchange (Real-time Redis Set)
+            if self.redis:
+                try:
+                    # Check if URL exists in community set
+                    # We store JSON in the set, so we might need a more efficient way, 
+                    # but for now we look for the URL specifically in recent or all.
+                    # Optimization: Use a dedicated set of URLs for O(1) lookups.
+                    if self.redis.sismember("community:threats:urls", url):
+                        return {
+                            "is_known_threat": True,
+                            "threat_type": "phishing",
+                            "source": "Community Threat Exchange",
+                            "confidence": 0.99,
+                            "last_updated": datetime.now()
+                        }
+                except Exception as e:
+                    logger.warning(f"Community Redis check failed: {e}")
+
+            # 4. Perform live API lookups concurrently (only for external URLs)
             api_tasks = []
-            if self.safebrowsing_key:
-                api_tasks.append(self._check_safebrowsing(url))
-            if self.virustotal_key:
-                api_tasks.append(self._check_virustotal(url))
+            if self._is_external_url(url):
+                if self.safebrowsing_key:
+                    api_tasks.append(self._check_safebrowsing(url))
+                if self.virustotal_key:
+                    api_tasks.append(self._check_virustotal(url))
+            else:
+                logger.debug(f"Skipping external API check for non-web URL: {url}")
                 
             if api_tasks:
                 results = await asyncio.gather(*api_tasks, return_exceptions=True)
@@ -309,6 +341,10 @@ class ThreatIntelligenceAggregator:
                             "last_updated": datetime.now(),
                             "details": {"match": data["matches"][0]}
                         }
+                elif response.status_code == 400:
+                    logger.warning(f"Safe Browsing API returned 400 Bad Request for URL: {url}")
+                else:
+                    logger.error(f"Safe Browsing API returned status {response.status_code}")
         except Exception as e:
             logger.error(f"Error checking Safe Browsing API: {e}")
             
@@ -350,6 +386,12 @@ class ThreatIntelligenceAggregator:
                             }
                     except KeyError:
                         pass
+                elif response.status_code == 404:
+                    logger.info(f"VirusTotal: URL not found in database (Clean/Unknown): {url}")
+                    return self._get_default_result()
+                else:
+                    logger.error(f"VirusTotal API returned status {response.status_code} for {url}")
+                    return self._get_default_result()
         except Exception as e:
             logger.error(f"Error checking VirusTotal API: {e}")
             
@@ -415,9 +457,9 @@ def get_threat_intelligence() -> Optional[ThreatIntelligenceAggregator]:
     return _threat_intelligence
 
 
-def init_threat_intelligence(cache_ttl_minutes: int = 5) -> ThreatIntelligenceAggregator:
+def init_threat_intelligence(redis_client=None, cache_ttl_minutes: int = 5) -> ThreatIntelligenceAggregator:
     """Initialize global threat intelligence aggregator"""
     global _threat_intelligence
     if _threat_intelligence is None:
-        _threat_intelligence = ThreatIntelligenceAggregator(cache_ttl_minutes)
+        _threat_intelligence = ThreatIntelligenceAggregator(redis_client, cache_ttl_minutes)
     return _threat_intelligence

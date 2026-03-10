@@ -11,10 +11,17 @@
         "declarativeNetRequest",
         "declarativeNetRequestFeedback",
         "sidePanel",
-        "contextMenus"
+        "contextMenus",
+        "scripting",
+        "tabs"
     ],
     "host_permissions": [
-        "<all_urls>"
+        "<all_urls>",
+        "https://mail.google.com/*",
+        "https://outlook.live.com/*",
+        "https://www.google.com/*",
+        "https://www.bing.com/*",
+        "https://duckduckgo.com/*"
     ],
     "background": {
         "service_worker": "src/background/background.js",
@@ -43,6 +50,64 @@
             "js": [
                 "src/content/content.js"
             ]
+        },
+        {
+            "matches": [
+                "*://web.whatsapp.com/*"
+            ],
+            "js": [
+                "src/content/whatsapp.js"
+            ],
+            "all_frames": true
+        },
+        {
+            "matches": [
+                "http://*/*",
+                "https://*/*"
+            ],
+            "js": [
+                "src/content/forensics.js"
+            ]
+        },
+        {
+            "matches": [
+                "https://www.google.com/search*",
+                "https://www.bing.com/search*",
+                "https://duckduckgo.com/*"
+            ],
+            "js": [
+                "src/content/searchHUD.js"
+            ]
+        },
+        {
+            "matches": [
+                "https://mail.google.com/*",
+                "https://outlook.live.com/*",
+                "https://outlook.office.com/*",
+                "https://outlook.office365.com/*"
+            ],
+            "js": [
+                "src/content/webmail.js"
+            ]
+        },
+        {
+            "matches": [
+                "http://*/*",
+                "https://*/*"
+            ],
+            "js": [
+                "src/content/quishing.js"
+            ]
+        },
+        {
+            "matches": [
+                "http://*/*",
+                "https://*/*"
+            ],
+            "js": [
+                "src/content/cosmetic_filter.js"
+            ],
+            "run_at": "document_idle"
         }
     ],
     "web_accessible_resources": [
@@ -66,5 +131,8 @@
                 "path": "rules/tracker_rules.json"
             }
         ]
+    },
+    "content_security_policy": {
+        "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
     }
 }

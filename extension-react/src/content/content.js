@@ -24,7 +24,9 @@ function analyzeDOM() {
     page_title: document.title,
     scripts_count: 0,
     suspicious_scripts: 0,
-    brand_indicators: []
+    brand_indicators: [],
+    page_text: document.body.innerText.substring(0, 2000),
+    meta_description: document.querySelector('meta[name="description"]')?.content || ''
   };
 
   // Check for password fields

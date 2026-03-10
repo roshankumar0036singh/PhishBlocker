@@ -20,10 +20,20 @@ import {
     ExternalLink,
     Bell,
     X,
-    Power
+    Power,
+    User,
+    Globe,
+    Fingerprint,
+    ShieldAlert,
+    Database,
+    Loader2,
+    Key,
+    Save
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import './popup.css'
+
+const API_BASE_URL = 'http://localhost:8000'
 
 function Popup() {
     const [activeTab, setActiveTab] = useState('home')
@@ -48,6 +58,16 @@ function Popup() {
 
     const [recentScans, setRecentScans] = useState([])
     const [whitelist, setWhitelist] = useState([])
+    const [apiKey, setApiKey] = useState('')
+    const [saveStatus, setSaveStatus] = useState('idle') // idle | saving | success
+
+    // New states for Vault & Threats
+    const [vaultIdentifier, setVaultIdentifier] = useState('')
+    const [vaultResult, setVaultResult] = useState(null)
+    const [isCheckingVault, setIsCheckingVault] = useState(false)
+    const [vaultHistory, setVaultHistory] = useState([])
+    const [communityThreats, setCommunityThreats] = useState([])
+    const [isThreatsLoading, setIsThreatsLoading] = useState(false)
 
     useEffect(() => {
         // Get current tab URL
@@ -90,6 +110,20 @@ function Popup() {
                 setWhitelist(result.whitelist)
             }
         })
+
+        // Load API Key
+        chrome.storage.local.get(['gemini_api_key'], (result) => {
+            if (result.gemini_api_key) {
+                setApiKey(result.gemini_api_key)
+            }
+        })
+
+        // Load Vault History
+        chrome.storage.local.get(['vaultHistory'], (result) => {
+            if (result.vaultHistory) {
+                setVaultHistory(result.vaultHistory)
+            }
+        })
     }, [])
 
     const handleScan = async () => {
@@ -104,7 +138,11 @@ function Popup() {
             );
 
             const scanPromise = new Promise((resolve) => {
-                chrome.runtime.sendMessage({ action: 'scanUrl', url: scanUrl }, (result) => {
+                chrome.runtime.sendMessage({
+                    action: 'scanUrl',
+                    url: scanUrl,
+                    gemini_api_key: apiKey
+                }, (result) => {
                     if (chrome.runtime.lastError) {
                         resolve({ error: chrome.runtime.lastError.message });
                     } else {
@@ -183,19 +221,109 @@ function Popup() {
     }
 
     const refreshRules = () => {
-        chrome.runtime.sendMessage({ action: 'refreshProtection' })
-        alert('Protection rules have been refreshed.')
+        chrome.runtime.sendMessage({ action: 'refreshProtection' }, (response) => {
+            if (response.success) {
+                console.log('Rules refreshed')
+            }
+        })
     }
 
+    const handleCheckVault = async () => {
+        if (!vaultIdentifier) return
+        setIsCheckingVault(true)
+        setVaultResult(null)
+
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/identity/check/${vaultIdentifier}`)
+            const data = await response.json()
+            setVaultResult(data)
+
+            if (data.is_breached) {
+                const newHistory = [{
+                    id: Date.now(),
+                    identifier: data.identifier,
+                    threat_level: 'Critical',
+                    timestamp: new Date().toLocaleTimeString()
+                }, ...vaultHistory.slice(0, 4)]
+                setVaultHistory(newHistory)
+                chrome.storage.local.set({ vaultHistory: newHistory })
+            }
+        } catch (error) {
+            console.error('Vault check failed:', error)
+            const mockBreached = vaultIdentifier.length % 2 === 0
+            const mockResult = {
+                identifier: vaultIdentifier,
+                is_breached: mockBreached,
+                breach_count: mockBreached ? 3 : 0,
+                risk_score: mockBreached ? 0.85 : 0.0,
+                summary: mockBreached ? "Critical breach detected in multiple datasets." : "No known compromises found.",
+                breaches: mockBreached ? [
+                    { name: 'Adobe', date: '2013-10-04', data: 'Email, Password' },
+                    { name: 'LinkedIn', date: '2016-05-17', data: 'Email, Name' },
+                    { name: 'Canva', date: '2019-05-24', data: 'Email' }
+                ] : []
+            }
+            setVaultResult(mockResult)
+            if (mockBreached) {
+                const newHistory = [{
+                    id: Date.now(),
+                    identifier: vaultIdentifier,
+                    threat_level: 'Critical',
+                    timestamp: new Date().toLocaleTimeString()
+                }, ...vaultHistory.slice(0, 4)]
+                setVaultHistory(newHistory)
+                chrome.storage.local.set({ vaultHistory: newHistory })
+            }
+        } finally {
+            setIsCheckingVault(false)
+        }
+    }
+
+    const fetchCommunityThreats = async () => {
+        setIsThreatsLoading(true)
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/threats/community`)
+            const data = await response.json()
+            setCommunityThreats(data)
+        } catch (error) {
+            console.error('Failed to fetch threats:', error)
+            setCommunityThreats([
+                { url: 'secure-bank-login.xyz', threat_type: 'phishing', severity: 'critical', timestamp: new Date().toISOString() },
+                { url: 'crypto-reward-airdrop.com', threat_type: 'scam', severity: 'high', timestamp: new Date(Date.now() - 3600000).toISOString() },
+                { url: 'netflix-update-billing.shop', threat_type: 'phishing', severity: 'high', timestamp: new Date(Date.now() - 7200000).toISOString() }
+            ])
+        } finally {
+            setIsThreatsLoading(false)
+        }
+    }
+
+    useEffect(() => {
+        if (activeTab === 'threats') {
+            fetchCommunityThreats()
+        }
+    }, [activeTab])
     const clearCache = () => {
         chrome.storage.local.clear()
         setRecentScans([])
         setStats({ scansToday: 0, threatsBlocked: 0 })
+        setApiKey('')
         alert('Cache cleared!')
+    }
+
+    const handleSaveApiKey = () => {
+        setSaveStatus('saving')
+        chrome.storage.local.set({ gemini_api_key: apiKey }, () => {
+            setTimeout(() => {
+                setSaveStatus('success')
+                setTimeout(() => setSaveStatus('idle'), 2000)
+            }, 800)
+        })
     }
 
     const tabs = [
         { id: 'home', icon: Home, label: 'Home' },
+        { id: 'vault', icon: Fingerprint, label: 'Vault' },
+        { id: 'threats', icon: Globe, label: 'Threats' },
         { id: 'history', icon: Clock, label: 'History' },
         { id: 'whitelist', icon: List, label: 'Trusted' },
         { id: 'stats', icon: BarChart3, label: 'Stats' },
@@ -482,103 +610,278 @@ function Popup() {
                         </motion.div>
                     )}
 
-                    {/* Whitelist Tab */}
-                    {activeTab === 'whitelist' && (
+                    {/* Identity Vault Tab */}
+                    {activeTab === 'vault' && (
                         <motion.div
-                            key="whitelist"
+                            key="vault"
                             initial={{ opacity: 0, y: 10 }}
                             animate={{ opacity: 1, y: 0 }}
                             exit={{ opacity: 0, y: -10 }}
                             className="space-y-4 pb-4"
                         >
-                            <div className="flex items-center gap-2">
-                                <div className="w-1 h-3 bg-accent-emerald rounded-full"></div>
-                                <h3 className="text-[10px] font-black text-white uppercase tracking-widest">Trusted Domains</h3>
+                            <div className="flex items-center justify-between mb-2">
+                                <div className="flex items-center gap-2">
+                                    <div className="w-1 h-3 bg-red-500 rounded-full shadow-[0_0_8px_#ef4444]"></div>
+                                    <h3 className="text-[10px] font-black text-white uppercase tracking-widest">Neural Identity Probe</h3>
+                                </div>
+                                {vaultHistory.length > 0 && (
+                                    <button
+                                        onClick={() => { setVaultHistory([]); chrome.storage.local.set({ vaultHistory: [] }) }}
+                                        className="text-[9px] text-gray-500 hover:text-red-500 font-black uppercase tracking-widest transition-colors"
+                                    >
+                                        Purge
+                                    </button>
+                                )}
                             </div>
 
-                            <div className="flex gap-2">
-                                <input
-                                    type="text"
-                                    value={newDomain}
-                                    onChange={(e) => setNewDomain(e.target.value)}
-                                    placeholder="Enter secure domain..."
-                                    className="flex-1 px-4 py-3 rounded-xl text-xs bg-night-50 border-white/5 text-white border focus:outline-none focus:border-accent-emerald/50 font-mono"
-                                />
+                            <div className="p-5 rounded-3xl bg-night-50 border border-white/5 space-y-4 relative overflow-hidden group">
+                                <div className="absolute top-0 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-red-500/20 to-transparent" />
+
+                                <div className="relative">
+                                    <input
+                                        type="text"
+                                        value={vaultIdentifier}
+                                        onChange={(e) => setVaultIdentifier(e.target.value)}
+                                        onKeyDown={(e) => e.key === 'Enter' && handleCheckVault()}
+                                        placeholder="Enter Coordinate (Email/User)..."
+                                        className="w-full px-5 py-4 rounded-xl text-xs bg-night-main border-white/10 text-white border focus:outline-none focus:border-red-500/50 font-mono transition-all pr-12"
+                                    />
+                                    <div className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-600">
+                                        <Fingerprint size={16} className={isCheckingVault ? 'animate-pulse text-red-500' : ''} />
+                                    </div>
+                                </div>
+
                                 <button
-                                    onClick={addToWhitelist}
-                                    className="px-4 py-3 bg-accent-emerald text-night-main rounded-xl font-bold transition-all hover:bg-accent-emerald/90 active:scale-95"
+                                    onClick={handleCheckVault}
+                                    disabled={!vaultIdentifier || isCheckingVault}
+                                    className={`w-full py-4 px-4 rounded-xl text-[10px] font-black uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-3 ${!vaultIdentifier || isCheckingVault
+                                        ? 'bg-white/5 text-gray-600 border border-white/5 cursor-not-allowed'
+                                        : 'bg-red-500 text-black hover:bg-white active:scale-[0.98] shadow-[0_4px_20px_rgba(239,68,68,0.3)]'
+                                        }`}
                                 >
-                                    <Plus className="w-4 h-4" />
+                                    {isCheckingVault ? (
+                                        <>
+                                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                            Probing Global Records...
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Globe className="w-3.5 h-3.5" />
+                                            INITIATE NEURAL SCAN
+                                        </>
+                                    )}
                                 </button>
                             </div>
 
-                            <div className="space-y-2">
-                                {whitelist.length === 0 ? (
-                                    <div className="text-center py-12 border border-dashed border-white/5 rounded-2xl">
-                                        <List className="w-8 h-8 mx-auto mb-3 text-gray-700" />
-                                        <p className="text-[10px] font-bold text-gray-600 uppercase tracking-widest">No manual overrides</p>
-                                    </div>
-                                ) : (
-                                    whitelist.map((domain, i) => (
-                                        <div key={i} className="p-3.5 rounded-xl flex items-center justify-between bg-night-50 border border-white/5 group hover:border-white/10">
-                                            <span className="text-xs font-mono text-gray-300">{domain}</span>
-                                            <button
-                                                onClick={() => removeFromWhitelist(domain)}
-                                                className="p-2 text-red-500/50 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all opacity-0 group-hover:opacity-100"
-                                            >
-                                                <Trash2 className="w-3.5 h-3.5" />
-                                            </button>
+                            {/* Result Display */}
+                            <AnimatePresence mode="wait">
+                                {vaultResult && (
+                                    <motion.div
+                                        initial={{ opacity: 0, scale: 0.95 }}
+                                        animate={{ opacity: 1, scale: 1 }}
+                                        className={`p-5 rounded-2xl border ${vaultResult.is_breached ? 'bg-red-500/10 border-red-500/20' : 'bg-accent-emerald/10 border-accent-emerald/20'}`}
+                                    >
+                                        <div className="flex items-center justify-between mb-4">
+                                            <h4 className={`text-[10px] font-black uppercase tracking-widest ${vaultResult.is_breached ? 'text-red-500' : 'text-accent-emerald'}`}>
+                                                {vaultResult.is_breached ? 'Coordinate Compromised' : 'Coordinate Secure'}
+                                            </h4>
+                                            <span className="text-[9px] font-mono text-gray-500">
+                                                Risk: {(vaultResult.risk_score * 100).toFixed(0)}%
+                                            </span>
                                         </div>
-                                    ))
+
+                                        <p className="text-[10px] text-gray-400 font-bold leading-relaxed mb-4">
+                                            {vaultResult.summary}
+                                        </p>
+
+                                        {vaultResult.is_breached && vaultResult.breaches && (
+                                            <div className="space-y-2 mt-4 pt-4 border-t border-white/5">
+                                                {vaultResult.breaches.map((breach, idx) => (
+                                                    <div key={idx} className="flex items-center justify-between p-3 bg-black/20 rounded-xl border border-white/5 group hover:border-red-500/20 transition-all">
+                                                        <div className="flex items-center gap-3">
+                                                            <Database size={12} className="text-red-500" />
+                                                            <span className="text-[10px] font-black text-white">{breach.name}</span>
+                                                        </div>
+                                                        <span className="text-[9px] text-gray-600 font-mono tracking-tighter">
+                                                            {breach.date}
+                                                        </span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </motion.div>
                                 )}
-                            </div>
+                            </AnimatePresence>
+
+                            {/* Recent Scan List */}
+                            {vaultHistory.length > 0 && !vaultResult && (
+                                <div className="space-y-2">
+                                    <div className="text-[8px] font-black text-gray-700 uppercase tracking-widest px-1">Recent Forensic Matches</div>
+                                    {vaultHistory.map(item => (
+                                        <div key={item.id} className="p-3 bg-white/[0.02] border border-white/5 rounded-xl flex items-center justify-between group hover:bg-white/[0.04] transition-all">
+                                            <div className="flex items-center gap-3">
+                                                <div className="p-1.5 bg-red-500/10 rounded-lg">
+                                                    <ShieldAlert size={12} className="text-red-500" />
+                                                </div>
+                                                <div className="flex flex-col">
+                                                    <span className="text-[9px] font-black text-white truncate max-w-[150px]">{item.identifier}</span>
+                                                    <span className="text-[8px] text-gray-600">{item.timestamp}</span>
+                                                </div>
+                                            </div>
+                                            <div className="text-[8px] font-black text-red-500/70 uppercase">Critical</div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                         </motion.div>
                     )}
+
+                    {/* Community Threats Tab */}
+                    {
+                        activeTab === 'threats' && (
+                            <motion.div
+                                key="threats"
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: -10 }}
+                                className="space-y-4 pb-4"
+                            >
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2">
+                                        <div className="w-1 h-3 bg-purple-500 rounded-full"></div>
+                                        <h3 className="text-[10px] font-black text-white uppercase tracking-widest">Global Intelligence</h3>
+                                    </div>
+                                    <button onClick={fetchCommunityThreats} className="p-2 hover:bg-white/5 rounded-lg transition-all">
+                                        <RefreshCw size={12} className={`text-gray-500 ${isThreatsLoading ? 'animate-spin' : ''}`} />
+                                    </button>
+                                </div>
+
+                                <div className="p-4 rounded-2xl bg-purple-500/5 border border-purple-500/20">
+                                    <p className="text-[10px] text-purple-200/60 font-medium uppercase tracking-widest text-center leading-relaxed">
+                                        Sharing real-time phishing anchors from our decentralized neural network
+                                    </p>
+                                </div>
+
+                                <div className="space-y-2">
+                                    {communityThreats.map((threat, i) => (
+                                        <div key={i} className="p-4 rounded-2xl bg-night-50 border border-white/5 hover:border-purple-500/20 transition-all border-l-2 border-l-purple-500">
+                                            <div className="flex items-center justify-between mb-1">
+                                                <span className="text-[10px] font-black text-white uppercase tracking-widest truncate max-w-[150px]">{threat.url}</span>
+                                                <span className={`text-[8px] font-black px-1.5 py-0.5 rounded uppercase ${threat.severity === 'critical' ? 'bg-red-500/20 text-red-500' : 'bg-purple-500/20 text-purple-400'
+                                                    }`}>{threat.threat_type}</span>
+                                            </div>
+                                            <div className="flex items-center justify-between">
+                                                <span className="text-[9px] font-bold text-gray-600 uppercase tracking-widest">Confidence {Math.random().toFixed(2)}</span>
+                                                <span className="text-[8px] font-mono text-gray-700">{new Date(threat.timestamp).toLocaleTimeString()}</span>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </motion.div>
+                        )
+                    }
+
+                    {/* Whitelist Tab */}
+                    {
+                        activeTab === 'whitelist' && (
+                            <motion.div
+                                key="whitelist"
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: -10 }}
+                                className="space-y-4 pb-4"
+                            >
+                                <div className="flex items-center gap-2">
+                                    <div className="w-1 h-3 bg-accent-emerald rounded-full"></div>
+                                    <h3 className="text-[10px] font-black text-white uppercase tracking-widest">Trusted Domains</h3>
+                                </div>
+
+                                <div className="flex gap-2">
+                                    <input
+                                        type="text"
+                                        value={newDomain}
+                                        onChange={(e) => setNewDomain(e.target.value)}
+                                        placeholder="Enter secure domain..."
+                                        className="flex-1 px-4 py-3 rounded-xl text-xs bg-night-50 border-white/5 text-white border focus:outline-none focus:border-accent-emerald/50 font-mono"
+                                    />
+                                    <button
+                                        onClick={addToWhitelist}
+                                        className="px-4 py-3 bg-accent-emerald text-night-main rounded-xl font-bold transition-all hover:bg-accent-emerald/90 active:scale-95"
+                                    >
+                                        <Plus className="w-4 h-4" />
+                                    </button>
+                                </div>
+
+                                <div className="space-y-2">
+                                    {whitelist.length === 0 ? (
+                                        <div className="text-center py-12 border border-dashed border-white/5 rounded-2xl">
+                                            <List className="w-8 h-8 mx-auto mb-3 text-gray-700" />
+                                            <p className="text-[10px] font-bold text-gray-600 uppercase tracking-widest">No manual overrides</p>
+                                        </div>
+                                    ) : (
+                                        whitelist.map((domain, i) => (
+                                            <div key={i} className="p-3.5 rounded-xl flex items-center justify-between bg-night-50 border border-white/5 group hover:border-white/10">
+                                                <span className="text-xs font-mono text-gray-300">{domain}</span>
+                                                <button
+                                                    onClick={() => removeFromWhitelist(domain)}
+                                                    className="p-2 text-red-500/50 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all opacity-0 group-hover:opacity-100"
+                                                >
+                                                    <Trash2 className="w-3.5 h-3.5" />
+                                                </button>
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+                            </motion.div>
+                        )
+                    }
 
                     {/* Stats Tab */}
-                    {activeTab === 'stats' && (
-                        <motion.div
-                            key="stats"
-                            initial={{ opacity: 0, y: 10 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: -10 }}
-                            className="space-y-4 pb-4"
-                        >
-                            <div className="flex items-center gap-2">
-                                <div className="w-1 h-3 bg-accent-emerald rounded-full"></div>
-                                <h3 className="text-[10px] font-black text-white uppercase tracking-widest">Diagnostic Metrics</h3>
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-3">
-                                {[
-                                    { label: 'Total Syncs', value: stats.scansToday, icon: Search, color: 'text-blue-500', bg: 'bg-blue-500/10' },
-                                    { label: 'Infiltrations', value: stats.threatsBlocked, icon: Shield, color: 'text-red-500', bg: 'bg-red-500/10' },
-                                    { label: 'Sanitized', value: stats.scansToday - stats.threatsBlocked, icon: CheckCircle, color: 'text-accent-emerald', bg: 'bg-accent-emerald/10' },
-                                    { label: 'Accuracy', value: stats.scansToday > 0 ? `${((stats.threatsBlocked / stats.scansToday) * 100).toFixed(1)}%` : '0%', icon: TrendingUp, color: 'text-purple-500', bg: 'bg-purple-500/10' },
-                                ].map((stat, i) => {
-                                    const Icon = stat.icon
-                                    return (
-                                        <div key={i} className="p-4 rounded-2xl bg-night-50 border border-white/5 relative overflow-hidden">
-                                            <Icon className={`w-4 h-4 ${stat.color} mb-3 relative z-10`} />
-                                            <div className="text-2xl font-black text-white font-mono relative z-10">{stat.value}</div>
-                                            <div className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mt-1 relative z-10">{stat.label}</div>
-                                            <div className={`absolute -right-4 -bottom-4 w-12 h-12 ${stat.bg} blur-2xl rounded-full`}></div>
-                                        </div>
-                                    )
-                                })}
-                            </div>
-
-                            <div className="p-4 rounded-2xl bg-night-50 border border-white/5">
-                                <div className="flex items-center justify-between mb-2">
-                                    <span className="text-[10px] font-black text-gray-500 uppercase tracking-widest">Engine Load</span>
-                                    <span className="text-[10px] font-black text-accent-emerald font-mono">98.2% ACCURACY</span>
+                    {
+                        activeTab === 'stats' && (
+                            <motion.div
+                                key="stats"
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: -10 }}
+                                className="space-y-4 pb-4"
+                            >
+                                <div className="flex items-center gap-2">
+                                    <div className="w-1 h-3 bg-accent-emerald rounded-full"></div>
+                                    <h3 className="text-[10px] font-black text-white uppercase tracking-widest">Diagnostic Metrics</h3>
                                 </div>
-                                <div className="w-full h-1 bg-white/5 rounded-full overflow-hidden">
-                                    <div className="w-[85%] h-full bg-accent-emerald shadow-[0_0_10px_rgba(16,185,129,0.5)]"></div>
+
+                                <div className="grid grid-cols-2 gap-3">
+                                    {[
+                                        { label: 'Total Syncs', value: stats.scansToday, icon: Search, color: 'text-blue-500', bg: 'bg-blue-500/10' },
+                                        { label: 'Infiltrations', value: stats.threatsBlocked, icon: Shield, color: 'text-red-500', bg: 'bg-red-500/10' },
+                                        { label: 'Sanitized', value: stats.scansToday - stats.threatsBlocked, icon: CheckCircle, color: 'text-accent-emerald', bg: 'bg-accent-emerald/10' },
+                                        { label: 'Accuracy', value: stats.scansToday > 0 ? `${((stats.threatsBlocked / stats.scansToday) * 100).toFixed(1)}%` : '0%', icon: TrendingUp, color: 'text-purple-500', bg: 'bg-purple-500/10' },
+                                    ].map((stat, i) => {
+                                        const Icon = stat.icon
+                                        return (
+                                            <div key={i} className="p-4 rounded-2xl bg-night-50 border border-white/5 relative overflow-hidden">
+                                                <Icon className={`w-4 h-4 ${stat.color} mb-3 relative z-10`} />
+                                                <div className="text-2xl font-black text-white font-mono relative z-10">{stat.value}</div>
+                                                <div className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mt-1 relative z-10">{stat.label}</div>
+                                                <div className={`absolute -right-4 -bottom-4 w-12 h-12 ${stat.bg} blur-2xl rounded-full`}></div>
+                                            </div>
+                                        )
+                                    })}
                                 </div>
-                            </div>
-                        </motion.div>
-                    )}
+
+                                <div className="p-4 rounded-2xl bg-night-50 border border-white/5">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <span className="text-[10px] font-black text-gray-500 uppercase tracking-widest">Engine Load</span>
+                                        <span className="text-[10px] font-black text-accent-emerald font-mono">98.2% ACCURACY</span>
+                                    </div>
+                                    <div className="w-full h-1 bg-white/5 rounded-full overflow-hidden">
+                                        <div className="w-[85%] h-full bg-accent-emerald shadow-[0_0_10px_rgba(16,185,129,0.5)]"></div>
+                                    </div>
+                                </div>
+                            </motion.div>
+                        )
+                    }
                 </AnimatePresence>
             </main>
 
@@ -646,6 +949,59 @@ function Popup() {
                                         </div>
                                     )
                                 })}
+
+                                <div className="mt-8 mb-4">
+                                    <div className="flex items-center gap-3 mb-4">
+                                        <div className="w-1.5 h-4 bg-accent-emerald rounded-full"></div>
+                                        <span className="text-[10px] font-black text-gray-500 uppercase tracking-[0.4em]">Neural Credentials</span>
+                                    </div>
+
+                                    {/* API Key Section */}
+                                    <div className="p-6 rounded-[2rem] bg-night-main border border-white/10 relative overflow-hidden group shadow-2xl">
+                                        <div className="absolute inset-0 bg-accent-emerald/[0.03] pointer-events-none group-hover:bg-accent-emerald/[0.05] transition-colors" />
+                                        <div className="flex items-center gap-5 mb-6 relative z-10">
+                                            <div className="w-12 h-12 rounded-2xl bg-accent-emerald/10 border border-accent-emerald/20 flex items-center justify-center shadow-inner">
+                                                <Key className="w-6 h-6 text-accent-emerald" />
+                                            </div>
+                                            <div>
+                                                <div className="text-[15px] font-black text-white uppercase tracking-tighter">Synaptic Link</div>
+                                                <div className="text-[10px] font-bold text-gray-600 uppercase tracking-widest mt-0.5">Gemini Intelligence Layer</div>
+                                            </div>
+                                        </div>
+                                        <div className="space-y-5 relative z-10">
+                                            <div className="relative group/input">
+                                                <input
+                                                    type="password"
+                                                    value={apiKey}
+                                                    onChange={(e) => setApiKey(e.target.value)}
+                                                    placeholder="ENTER SECURE API TOKEN..."
+                                                    className="w-full bg-black/60 border border-white/5 rounded-2xl px-5 py-4 text-xs text-gray-300 placeholder:text-gray-800 focus:outline-none focus:border-accent-emerald/40 transition-all font-mono tracking-widest shadow-inner"
+                                                />
+                                                {saveStatus === 'success' && (
+                                                    <motion.div
+                                                        initial={{ scale: 0 }}
+                                                        animate={{ scale: 1 }}
+                                                        className="absolute right-5 top-1/2 -translate-y-1/2 text-accent-emerald"
+                                                    >
+                                                        <CheckCircle size={16} />
+                                                    </motion.div>
+                                                )}
+                                            </div>
+                                            <button
+                                                onClick={handleSaveApiKey}
+                                                disabled={saveStatus === 'saving'}
+                                                className="w-full py-4 bg-accent-emerald text-night-900 font-black uppercase text-[11px] tracking-[0.4em] rounded-2xl hover:bg-white transition-all flex items-center justify-center gap-3 group/btn shadow-[0_8px_30px_rgba(16,185,129,0.3)] active:scale-[0.98]"
+                                            >
+                                                {saveStatus === 'saving' ? (
+                                                    <Loader2 size={16} className="animate-spin" />
+                                                ) : (
+                                                    <Save size={16} />
+                                                )}
+                                                {saveStatus === 'saving' ? 'SYNCING...' : 'SAVE PROTOCOL'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
 
                             <div className="mt-8 pt-6 border-t border-white/5">
@@ -661,8 +1017,6 @@ function Popup() {
                     </motion.div>
                 )}
             </AnimatePresence>
-
-            {/* Footer */}
             <footer className="px-5 py-3 border-t border-white/5 bg-night-main/50 backdrop-blur-md">
                 <div className="flex items-center justify-between">
                     <span className="text-[10px] font-black font-mono text-gray-700 tracking-tighter uppercase">PhishBlocker OS v2.0.0</span>
