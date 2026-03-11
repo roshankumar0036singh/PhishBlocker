@@ -17,8 +17,8 @@ export default defineConfig({
             ]
         })
     ],
-    base: './',
     build: {
+        emptyOutDir: true,
         rollupOptions: {
             input: {
                 popup: 'src/popup/popup.html',
